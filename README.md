@@ -8,14 +8,26 @@ OpenClaw 浏览器抓取能力扩展。当 `web_fetch` 无法处理的页面（J
 
 ```bash
 npm install -g @unstorm/openclaw-browser
+npx playwright install chromium
 ```
 
 ## 使用方式
 
+### 作为 OpenClaw Skill
+
+项目自带 SKILL.md，安装到 `~/.openclaw/skills/openclaw-browser/` 后，Agent 会在以下场景自动触发：
+
+- `web_fetch` 返回空或不完整（JS 渲染页面）
+- 微信公众号文章（mp.weixin.qq.com）
+- 需要等待懒加载内容
+- 需要浏览器安全边界（只读/白名单/超时控制）
+
+Agent 会自动选择合适的命令和参数，无需手动指定。
+
 ### CLI
 
 ```bash
-# 基础抓取（纯文本输出）
+# 基础抓取（纯文本）
 openclaw-browser --url "https://example.com"
 
 # 微信公众号文章（自动识别，提取正文 + 元数据）
@@ -24,8 +36,14 @@ openclaw-browser --url "https://mp.weixin.qq.com/s/xxx" --format markdown
 # 输出完整 JSON 结果
 openclaw-browser --url "https://example.com" --json --pretty
 
+# 等待懒加载内容
+openclaw-browser --url "https://example.com" --wait 3000
+
 # 自定义超时和内容大小限制
 openclaw-browser --url "https://example.com" --timeout 30000 --max-size 10485760
+
+# 域名白名单
+openclaw-browser --url "https://example.com" --allowed-domains "example.com,*.cdn.com"
 ```
 
 ### 代码调用
@@ -70,16 +88,16 @@ await client.close();
 | `--screenshot-on-error` | 失败时截图 | `false` |
 | `--json` / `--pretty` | 输出完整 JSON | `false` |
 
-## 内置 Guardrails
+## Guardrails（安全守卫）
 
 所有抓取操作都经过以下安全守卫：
 
 | 守卫 | 作用 |
 |------|------|
-| **并发限制** | 默认最多 2 个页面同时打开 |
-| **超时控制** | 单页默认 15s，可配置 |
+| **并发限制** | 最多 2 个页面同时打开（在创建 session 前拦截） |
+| **超时控制** | 单页默认 15s，硬超时覆盖整个抓取链路 |
 | **内容大小限制** | 默认 5MB，防止内存溢出 |
-| **只读模式** | 默认开启，禁止点击/滚动/表单提交 |
+| **只读模式** | 默认开启，禁止点击/滚动/表单提交，按 session 隔离 |
 | **域名白名单** | 可配置允许抓取的域名范围 |
 | **成本监控** | 追踪每次抓取的时间和资源消耗 |
 
@@ -103,6 +121,37 @@ await client.close();
 | `NAVIGATION_FAILED` | 页面导航失败 |
 | `CONCURRENCY_LIMIT` | 并发数达到上限 |
 | `BROWSER_CRASH` | 浏览器进程崩溃 |
+
+## 项目结构
+
+```
+src/
+├── core/           # 核心引擎
+│   ├── browser-client.ts    # 主入口，统一 API
+│   ├── browser-pool.ts      # 浏览器实例池管理
+│   ├── page-session.ts      # 页面会话生命周期
+│   ├── pipeline.ts          # 抓取流水线（导航→提取→清理）
+│   ├── fetch-runner.ts      # 抓取执行器
+│   └── content-extractor.ts # 内容提取调度
+├── extractors/     # 内容提取器
+│   ├── html-extractor.ts
+│   ├── text-extractor.ts
+│   └── wechat-article-extractor.ts
+├── guardrails/     # 安全守卫
+│   ├── concurrency-guard.ts
+│   ├── timeout-guard.ts
+│   ├── content-size-guard.ts
+│   ├── readonly-guard.ts
+│   ├── domain-whitelist-guard.ts
+│   ├── cost-guard.ts
+│   └── guardrail-manager.ts
+├── policies/       # 策略引擎
+│   ├── default-policy.ts
+│   └── wechat.ts
+├── errors/         # 错误体系
+├── types/          # 类型定义
+└── cli.ts          # CLI 入口
+```
 
 ## 开发
 
