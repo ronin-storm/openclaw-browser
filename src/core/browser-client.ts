@@ -84,11 +84,19 @@ export class OpenClawBrowserClient {
     let finalOptions = applyPolicy(mergedOptions);
     finalOptions = applyWechatPolicy(finalOptions);
 
-    const session = await PageSession.create(this.pool);
+    // Acquire the concurrency slot BEFORE creating a browser context/page so
+    // that we never exceed maxConcurrency in-flight sessions.
+    const releaseSlot = await this.concurrencyGuard.acquireSlot();
+    let session: PageSession | undefined;
     try {
-      return await this.pipeline.run(session, finalOptions);
+      session = await PageSession.create(this.pool);
+      try {
+        return await this.pipeline.run(session, finalOptions);
+      } finally {
+        await session.close();
+      }
     } finally {
-      await session.close();
+      releaseSlot();
     }
   }
 

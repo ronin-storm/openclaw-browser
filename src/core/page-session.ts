@@ -20,10 +20,22 @@ export class PageSession {
 
   static async create(pool: BrowserPool): Promise<PageSession> {
     const context = await pool.newContext();
-    const page = await context.newPage();
-    const session = new PageSession(page, context);
-    session.networkTracker.attach(page);
-    return session;
+    let page;
+    try {
+      page = await context.newPage();
+    } catch (err) {
+      try { await context.close(); } catch { /* non-fatal */ }
+      throw err;
+    }
+    try {
+      const session = new PageSession(page, context);
+      session.networkTracker.attach(page);
+      return session;
+    } catch (err) {
+      try { await page.close(); } catch { /* non-fatal */ }
+      try { await context.close(); } catch { /* non-fatal */ }
+      throw err;
+    }
   }
 
   async close(): Promise<void> {

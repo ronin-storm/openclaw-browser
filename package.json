@@ -1,6 +1,6 @@
 {
   "name": "@unstorm/openclaw-browser",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "OpenClaw fallback fetch solution for JS-rendered pages and WeChat articles",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",

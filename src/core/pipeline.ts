@@ -13,7 +13,7 @@ import { ContentSizeGuard } from '../guardrails/content-size-guard';
 import { PageSession } from './page-session';
 import { FetchRunner } from './fetch-runner';
 import { ContentExtractor } from './content-extractor';
-import { BrowserFetchError } from '../errors/base-error';
+import { BrowserFetchError, TimeoutError } from '../errors/base-error';
 
 export class Pipeline {
   private guardrailManager: GuardrailManager;
@@ -53,21 +53,53 @@ export class Pipeline {
       // Attach page-level guardrail listeners
       await this.guardrailManager.attachAll(ctx);
 
-      // Execute navigation
-      const navResult = await this.fetchRunner.navigate(
-        session.page,
-        options,
-        abortController.signal
-      );
+      // Execute navigation + extraction under a hard wall-clock timeout.
+      // AbortController alone isn't enough because Playwright methods (e.g.
+      // page.content(), extract) don't observe AbortSignal.  We close the
+      // page explicitly on expiry so every pending Playwright call rejects.
+      const timeoutMs =
+        (options.pageTimeout ?? 15_000) + (options.extraWaitMs ?? 0);
 
-      // Post-navigation guardrail checks
-      await this.guardrailManager.runAfterFetch(ctx, navResult.html);
+      let timeoutHandle: NodeJS.Timeout | undefined;
+      const hardTimeoutPromise = new Promise<never>((_resolve, reject) => {
+        timeoutHandle = setTimeout(() => {
+          // Signal consumers that listen on abortSignal
+          abortController.abort(new Error(`Hard timeout after ${timeoutMs}ms`));
+          // Force-close the page so any in-flight page.* call rejects.
+          // Fire-and-forget — we reject immediately so the caller gets the
+          // TimeoutError without waiting for close() to settle.
+          void session.page.close().catch(() => { /* ignore */ });
+          reject(new TimeoutError(`Operation timed out after ${timeoutMs}ms`));
+        }, timeoutMs);
+        if (timeoutHandle.unref) timeoutHandle.unref();
+      });
 
-      // Extract content
-      const content = await this.contentExtractor.extract(
-        session.page,
-        options
-      );
+      const pipelineWork = (async () => {
+        // Execute navigation
+        const navResult = await this.fetchRunner.navigate(
+          session.page,
+          options,
+          abortController.signal
+        );
+
+        // Post-navigation guardrail checks
+        await this.guardrailManager.runAfterFetch(ctx, navResult.html);
+
+        // Extract content
+        const content = await this.contentExtractor.extract(
+          session.page,
+          options
+        );
+
+        return { navResult, content };
+      })();
+
+      const { navResult, content } = await Promise.race([
+        pipelineWork,
+        hardTimeoutPromise,
+      ]).finally(() => {
+        if (timeoutHandle !== undefined) clearTimeout(timeoutHandle);
+      });
 
       // Layer 3: Check output size (ContentSizeGuard)
       const contentSizeGuard =

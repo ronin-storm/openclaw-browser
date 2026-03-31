@@ -54,17 +54,36 @@ export class ConcurrencyGuard implements Guardrail {
     this.semaphore = new Semaphore(maxConcurrency);
   }
 
-  async beforeFetch(ctx: GuardrailContext): Promise<GuardrailResult> {
+  /**
+   * Acquire the semaphore slot directly (called before PageSession.create()).
+   * Returns a release function. Callers must invoke release() on cleanup.
+   */
+  async acquireSlot(): Promise<() => void> {
     await this.semaphore.acquire();
-    this.acquiredContexts.add(ctx);
+    let released = false;
+    return () => {
+      if (!released) {
+        released = true;
+        this.semaphore.release();
+      }
+    };
+  }
+
+  /**
+   * beforeFetch is a no-op when the slot has already been acquired via
+   * acquireSlot() before PageSession.create(). The semaphore is tracked
+   * and released by the caller through the release handle returned by
+   * acquireSlot(), so we skip re-acquisition here.
+   */
+  async beforeFetch(_ctx: GuardrailContext): Promise<GuardrailResult> {
+    // Slot is already held by the time pipeline.run() is called.
+    // Acquisition moved to BrowserClient.fetch() via acquireSlot().
     return { pass: true };
   }
 
-  async detach(ctx: GuardrailContext): Promise<void> {
-    if (this.acquiredContexts.has(ctx)) {
-      this.acquiredContexts.delete(ctx);
-      this.semaphore.release();
-    }
+  async detach(_ctx: GuardrailContext): Promise<void> {
+    // Release is now handled by the slot handle returned from acquireSlot().
+    // This method is kept for interface compatibility.
   }
 
   get stats() {

@@ -67,21 +67,25 @@ function blockAll(obj: any, methods: string[], label: string): () => void {
 export class ReadonlyGuard implements Guardrail {
   readonly name = 'ReadonlyGuard';
 
-  private restorers: Array<() => void> = [];
+  // Per-context restorer lists — prevents concurrent sessions from clobbering each other
+  private restorers = new Map<GuardrailContext, Array<() => void>>();
 
   async attach(ctx: GuardrailContext): Promise<void> {
     if (ctx.options.readonlyMode === false) return;
 
+    const ctxRestorers: Array<() => void> = [];
+    this.restorers.set(ctx, ctxRestorers);
+
     const page = ctx.page;
 
     // Patch Page direct methods
-    this.restorers.push(
+    ctxRestorers.push(
       blockAll(page, INTERACTIVE_PAGE_METHODS as string[], 'page')
     );
 
     // Patch page.keyboard
     try {
-      this.restorers.push(
+      ctxRestorers.push(
         blockAll(page.keyboard, INTERACTIVE_KEYBOARD_METHODS, 'keyboard')
       );
     } catch {
@@ -90,7 +94,7 @@ export class ReadonlyGuard implements Guardrail {
 
     // Patch page.mouse
     try {
-      this.restorers.push(
+      ctxRestorers.push(
         blockAll(page.mouse, INTERACTIVE_MOUSE_METHODS, 'mouse')
       );
     } catch {
@@ -100,12 +104,12 @@ export class ReadonlyGuard implements Guardrail {
     // Patch page.locator by wrapping locator() to return a blocked proxy
     const originalLocator = (page as any).locator?.bind(page);
     if (typeof originalLocator === 'function') {
-      (page as any).locator = (...args: any[]) => {
+      (page as any).locator = (..._args: any[]) => {
         throw new ReadonlyViolationError(
           'page.locator (readonly mode — use page.content() to read DOM)'
         );
       };
-      this.restorers.push(() => {
+      ctxRestorers.push(() => {
         (page as any).locator = originalLocator;
       });
     }
@@ -113,10 +117,10 @@ export class ReadonlyGuard implements Guardrail {
     // Patch page.frame (frame access could be used for interaction)
     const originalFrame = (page as any).frame?.bind(page);
     if (typeof originalFrame === 'function') {
-      (page as any).frame = (...args: any[]) => {
+      (page as any).frame = (..._args: any[]) => {
         throw new ReadonlyViolationError('page.frame (readonly mode)');
       };
-      this.restorers.push(() => {
+      ctxRestorers.push(() => {
         (page as any).frame = originalFrame;
       });
     }
@@ -128,14 +132,17 @@ export class ReadonlyGuard implements Guardrail {
   async detach(ctx: GuardrailContext): Promise<void> {
     if (ctx.options.readonlyMode === false) return;
 
-    for (const restore of this.restorers) {
-      try {
-        restore();
-      } catch {
-        /* non-fatal */
+    const ctxRestorers = this.restorers.get(ctx);
+    if (ctxRestorers) {
+      for (const restore of ctxRestorers) {
+        try {
+          restore();
+        } catch {
+          /* non-fatal */
+        }
       }
+      this.restorers.delete(ctx);
     }
-    this.restorers = [];
   }
 
   private async injectReadonlyScript(page: Page): Promise<void> {
